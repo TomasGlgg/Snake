@@ -166,6 +166,7 @@ void show_snake(struct Snake* snake) {
     for (int i = snake->length-1; i>0; i--)
         putchar(snake->coordinates[i*2] + 1, snake->coordinates[i*2 + 1] + 1, '#');
     attroff(color);
+    refresh();
 }
 
 void init_snake(struct Snake* snake) {
@@ -251,6 +252,7 @@ void show_apple() {
     attron(COLOR_PAIR(COLOR_APPLE));
     putchar(apple_x + 1, apple_y + 1, '%');
     attroff(COLOR_PAIR(COLOR_APPLE));
+    refresh();
 }
 
 void generate_apple() {
@@ -314,8 +316,8 @@ void render() {
                 else if (snake->direction == RIGHT) x++;
                 snake->last_direction = snake->direction;
 
-                if (i == snake_id && (block_exists(x, y) | over(x, y))) {
-                    loss();
+                if (block_exists(x, y) | over(x, y)) {
+                    if (i == snake_id) loss();
                     continue;
                 }
 
