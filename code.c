@@ -15,7 +15,7 @@
 #define putchar(x, y, sym) mvaddch(y, x, sym)
 
 #define MAX_SNAKE_COUNT 100  // < 2^8
-#define DEFAULT_SNAKE_LENGTH 20
+#define DEFAULT_SNAKE_LENGTH 10
 #define START_X 5  // first snake X offset
 
 
@@ -44,16 +44,16 @@ enum COLORS {
 struct Snake {
     int online;  // TRUE or FALSE
     int8_t live;  // TRUE or FALSE
-    uint8_t id;  // snake id in network, index in server mode
+    uint8_t id;  // snake id in network, index in server mode | id == index in array
     uint16_t length;
     uint8_t direction;
     uint8_t last_direction;
     uint16_t* coordinates;  // x1 y1 x2 y2 ...
-    int sd;
+    int sd;  // socket descriptor
 };
 
 
-struct Snake snakes[MAX_SNAKE_COUNT] = {0};  // snake at index 0 - we
+struct Snake snakes[MAX_SNAKE_COUNT] = {0};  // snake at index 0 in server mdode - my snake
 int PLAYING = TRUE;
 int w, h;  // window size
 uint16_t apple_x, apple_y;
@@ -230,6 +230,7 @@ void delete_snake(int id) {
     struct Snake* snake = snakes + id;
     snake->live = FALSE;
     for (int i = 0; i<snake->length; i++) putchar(snake->coordinates[i*2] + 1, snake->coordinates[i*2 + 1] + 1, ' ');
+    refresh();
     free(snake->coordinates);
 }
 
@@ -280,11 +281,22 @@ void sendall_loss(int id) {  // server
     sendall_pkt_with_exception(&pkt, sizeof(struct LossPkt), id);
 }
 
-void sendall_quit(int id) {
+void sendall_quit(int id) {  // server
     struct QuitPkt pkt;
     pkt.magic = QUIT;
     pkt.id = id;
     sendall_pkt(&pkt, sizeof(struct QuitPkt));
+}
+
+void loss() {
+    if (is_server) sendall_loss(0);
+    else send_loss();
+    delete_snake(snake_id);
+}
+
+int over(int x, int y) {
+    if (x < 0 || x > w - 1 || y < 0 || y > h - 1) return TRUE;
+    return FALSE;
 }
 
 void render() {
@@ -302,10 +314,8 @@ void render() {
                 else if (snake->direction == RIGHT) x++;
                 snake->last_direction = snake->direction;
 
-                if (i == snake_id && block_exists(x, y)) {
-                    if (is_server) sendall_loss(0);
-                    else send_loss();
-                    delete_snake(snake_id);
+                if (i == snake_id && (block_exists(x, y) | over(x, y))) {
+                    loss();
                     continue;
                 }
 
@@ -412,7 +422,7 @@ int8_t get_alives() {
     return count;
 }
 
-void send_snakes(int cd) {
+void send_snakes(int cd) {  // server
     struct Snake* snake;
     for (int i = 0; i<MAX_SNAKE_COUNT; i++) {
         snake = snakes + i;
@@ -440,11 +450,12 @@ void sendall_connection_pkt(int cd, int id, int x, int y) {  // server
     pkt.x = x;
     pkt.y = y;
 
-    sendall_pkt(&pkt, sizeof(struct ConnectionPkt));
+    sendall_pkt_with_exception(&pkt, sizeof(struct ConnectionPkt), id);
 }
 
 void accept_connection(int cd) {  // server
     struct Snake* new_snake = generate_snake();
+    new_snake->live = FALSE;
     new_snake->sd = cd;
     show_snake(new_snake);
     uint16_t new_x = new_snake->coordinates[0];
@@ -466,11 +477,12 @@ void accept_connection(int cd) {  // server
     send(cd, &pkt, sizeof(struct InitPkt), 0);
 
     send_snakes(cd);
+    new_snake->live = TRUE;
     sendall_connection_pkt(cd, new_snake->id, new_x, new_y);
 }
 
 void server_handler(struct sockaddr_in* addr) {
-    int sd, cd, maxfd;
+    int sd, cd, maxfd;  // cd - client descriptor
     sd = socket(AF_INET, SOCK_STREAM, 0);
     if (setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) < 0) quit(1);
     if (bind(sd, addr, sizeof(*addr)) < 0) quit(1);
@@ -521,10 +533,12 @@ void server_handler(struct sockaddr_in* addr) {
                         packet.direction = direction;
                         sendall_direction_pkt(packet);
                         break;
+
                     case LOSS:
                         delete_snake(id);
                         sendall_loss(id);
                         break;
+
                     case QUIT:
                         fds[i].fd = -1;
                         fds[i].events = 0;
@@ -544,6 +558,7 @@ void recv_snakes(int sd, int alives) {
 
     for (int i = 0; i<alives; i++) {
         recv(sd, &id, 1, 0);
+        if (id == snake_id) quit(id);
         struct Snake* snake = snakes + id;
         snake->live = TRUE;
         snake->id = id;
@@ -562,6 +577,7 @@ void client_connect(struct sockaddr_in addr) {
 
     struct InitPkt pkt;
     recv(sd, &pkt, sizeof(struct InitPkt), 0);
+
     snake_id = pkt.new_snake_id;
     generate_my_snake(pkt.new_x, pkt.new_y);
     apple_x = pkt.apple_x; apple_y = pkt.apple_y;
@@ -584,20 +600,23 @@ void client_handler() {
                 recv(sd, &direction, 1, 0);
                 set_snake_direction(id, direction);
                 break;
+
             case APPLE:
                 recv(sd, &apple_x, 2, 0); recv(sd, &apple_y, 2, 0);
                 show_apple();
                 break;
+
             case CONNECTION:
                 uint16_t x, y;
                 recv(sd, &id, 1, 0);
                 recv(sd, &x, 2, 0); recv(sd, &y, 2, 0);
                 generate_snake_by_coordinates(id, x, y);
                 break;
+
             case LOSS:
             case QUIT:
                 recv(sd, &id, 1, 0);
-                delete_snake(id);
+                if (snakes[id].live) delete_snake(id);
                 break;
         }
     }
